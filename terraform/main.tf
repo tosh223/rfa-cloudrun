@@ -13,9 +13,14 @@ terraform {
 ##############################################
 # Service Account
 ##############################################
-resource "google_service_account" "sa_cloudrun_rfa" {
-  account_id   = "sa-cloudrun-rfa"
-  display_name = "sa-cloudrun-rfa"
+resource "google_service_account" "sa_rfa_run" {
+  account_id   = "sa-rfa-run"
+  display_name = "sa-rfa-run"
+}
+
+resource "google_service_account" "sa_rfa_scheduler" {
+  account_id   = "sa-rfa-scheduler"
+  display_name = "sa-rfa-scheduler"
 }
 
 ##############################################
@@ -29,6 +34,7 @@ resource "google_cloud_run_service" "rfa" {
       containers {
         image = "gcr.io/${var.project}/rfa"
       }
+      service_account_name = google_service_account.sa_rfa_run.email
     }
   }
   traffic {
@@ -37,20 +43,16 @@ resource "google_cloud_run_service" "rfa" {
   }
 }
 
-resource "google_cloud_run_service_iam_binding" "rfa_invoker" {
-  project        = var.project
-  region         = google_cloud_run_service.rfa.region
-  cloud_function = google_cloud_run_service.rfa.name
-  role           = "roles/cloudrun.invoker"
-  members        = ["serviceAccount:${google_service_account.sa_cloudrun_rfa.email}"]
+resource "google_project_iam_binding" "rfa_bq_user" {
+  project = var.project
+  role    = "roles/bigquery.user"
+  members = ["serviceAccount:${google_service_account.sa_rfa_run.email}"]
 }
 
-resource "google_cloud_run_service_iam_binding" "rfa_secretAccessor" {
-  project        = var.project
-  region         = google_cloud_run_service.rfa.region
-  cloud_function = google_cloud_run_service.rfa.name
-  role           = "roles/secretmanager.secretAccessor"
-  members        = ["serviceAccount:${google_service_account.sa_cloudrun_rfa.email}"]
+resource "google_project_iam_binding" "rfa_secretAccessor" {
+  project = var.project
+  role    = "roles/secretmanager.secretAccessor"
+  members = ["serviceAccount:${google_service_account.sa_rfa_run.email}"]
 }
 
 ##############################################
@@ -58,22 +60,30 @@ resource "google_cloud_run_service_iam_binding" "rfa_secretAccessor" {
 ##############################################
 resource "google_cloud_scheduler_job" "rfa_crawler" {
   project  = google_cloud_run_service.rfa.project
-  region   = google_cloud_run_service.rfa.region
+  region   = "asia-northeast1"
   name     = "rfa-crawler"
-  schedule = "30 * * * *"
+  schedule = "0 * * * *"
   http_target {
-    uri         = google_cloud_run_service.rfa.https_trigger_url
+    uri         = google_cloud_run_service.rfa.status[0].url
     http_method = "POST"
-    body        = base64encode("{\"project_id\":\"${var.project}\", \"location\":\"${var.region}\", \"twitter_id\":\"${var.twitter_id}\", \"size\":\"${twitter_search_size}\"}")
+    body        = base64encode("{\"project_id\":\"${var.project}\", \"location\":\"${var.region}\", \"twitter_id\":\"${var.twitter_id}\", \"size\":\"${var.twitter_search_size}\"}")
     oidc_token {
-      service_account_email = google_service_account.sa_cloudrun_rfa.email
+      service_account_email = google_service_account.sa_rfa_scheduler.email
     }
   }
+}
+
+resource "google_cloud_run_service_iam_binding" "rfa_invoker" {
+  project  = var.project
+  service  = google_cloud_run_service.rfa.name
+  location = google_cloud_run_service.rfa.location
+  role     = "roles/run.invoker"
+  members  = ["serviceAccount:${google_service_account.sa_rfa_scheduler.email}"]
 }
 
 ##############################################
 # Output
 ##############################################
 output "cloud_run_rfa_url" {
-  value = google_cloud_run_service.rfa.https_trigger_url
+  value = google_cloud_run_service.rfa.status[0].url
 }
